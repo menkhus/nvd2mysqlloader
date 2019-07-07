@@ -1,0 +1,9 @@
+*.pynb
+*.pyc
+jsonfiles/*
+.vscode
+example.*
+NIST_json_schemas
+NIST_json_schemas/*
+
+

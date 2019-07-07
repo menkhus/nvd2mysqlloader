@@ -1,0 +1,7 @@
+{
+    "about":"config file for nvd2mysqlloader.py database loader",
+    "dbname":"nvd",
+    "dba":"theuserthatisassignedtothenvddatabase",
+    "password":"notarealpasswordpleasejustaplaceholder",
+    "host":"localhost or whereever you store the data"
+}
