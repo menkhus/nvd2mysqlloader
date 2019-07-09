@@ -1,3 +1,5 @@
+-- This schema is supposed to be the same as what is in the code and used by the program.
+-- 
 -- nvd2mysqlloader.py database setup.
 -- Create a database for the NIST CVE data
 --
@@ -48,22 +50,18 @@ CREATE TABLE if not exists nvd (
 );
 --
 --
+create index dates on nvd(published_datetime);
+--
+--
 create table if not exists update_history (
     -- this is the collection of download records for different files that NIST supplies.
     update_id int not NULL auto_increment,
     download_name text,
-    lastModifiedDate timestamp,
+    lastModifiedDate varchar(80),
+    downloadedDate varchar(80),
     size int,
     zipSize int,
     gzSize int,
     sha256 text,
     primary key(update_id)
 );
---
---
-CREATE DATABASE IF NOT EXISTS nvd  
-                    DEFAULT CHARACTER SET='utf8mb4' 
-                    DEFAULT COLLATE='utf8mb4_unicode_ci';
---
---
-create index dates on nvd(published_datetime);

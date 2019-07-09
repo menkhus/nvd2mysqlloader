@@ -5,8 +5,13 @@
     Mark Menkhus 2019 mark.menkhus@hpe.com
 
     to do:
-        o understand that NIST data and pull all the NIST provied data
-        o store history of loading in the database, use that history so that all data is not reloaded unless we suspect that we are out of date
+        o understand that NIST data and pull all the NIST provied data, cpe data is incomplete, just
+        the configuraiton is loaded so far
+    
+    history:
+        o v0.5 - created database loader, sent project on to github
+        o v0.6 - store history of loading in the database, use that history so that all data is not reloaded unless we suspect that we are out of date. Fixed database initialization so it will work if we have a valid config.json 
+        listed in the source.
 
     Copyright 2019 Mark Menkhus
 
@@ -37,10 +42,56 @@ import syslog
 
 
 __author__ = 'Mark Menkhus, mark.menkhus@gmail.com'
-__version__ = '0.5'
+__version__ = '0.6'
 __DEBUG__ = False
 
- 
+
+def get_file_lastModifiedDate(file_url):
+    """ get the modified date for a file on the nist site using the .meta file
+    """
+    url = file_url.replace('json.zip','meta')
+    metadata = requests.get(url).text
+    metadata = metadata.split('\n')
+    lastModifiedDate = metadata[0].lstrip('lastModifiedDate:').rstrip('\r')
+    sha256 = metadata[4].lstrip('sha256:').rstrip('\r')
+    return (lastModifiedDate,sha256)
+
+
+def download_if_lastdownloaded_lt_lastModifiedDate(usr, password, db, url):
+    """ decide if the lastModifiedDate on the NVD meta file is newer or the same as what we
+        stored the last time we udpated the database
+    """
+    lastModifiedDate = get_file_lastModifiedDate(url)[0]
+    sql = 'select lastModifiedDate from update_history where download_name = %s order by downloadedDate desc limit 1;'
+    conn = mysql.connector.connect(
+        host = "127.0.0.1",
+        user = usr,
+        passwd = password,
+        charset="utf8mb4",
+        collation="utf8mb4_unicode_ci",
+        use_unicode=True,
+        database=db
+    )
+    curs = conn.cursor()
+    curs.execute(sql,(url,))
+    try:
+        previouslastModifiedDate = str(curs.fetchone()[0])
+    except:
+        # if no data in the database then 
+        # pick some date that will be in the past and make that the date for comparison
+        previouslastModifiedDate = '2019-00-01T00:00:00-04:00'
+    try:
+        if lastModifiedDate > previouslastModifiedDate:
+            return True
+        else:
+            return False
+    
+    except Exception as oops:
+        print(oops)
+        print('non critical error - download_if_lastdownloaded_lt_lastModifiedDate url: %s previous date: %s last date: %s' % (url,previouslastModifiedDate, lastModifiedDate))
+        return False
+
+
 def get_from_nist(url,destinationfile):
     """ copy the file from NIST NVD site
     """
@@ -112,7 +163,9 @@ def get_vulnerable_software_list(config):
                         vulnerable_software_list.append(cpe['cpe23Uri'])
             except Exception as oops:
                 pass
+
     return ','.join(vulnerable_software_list)
+
 
 def get_data(cve):
     """ these are some of the data items that we can depend to be there
@@ -149,7 +202,7 @@ def get_data(cve):
         if configuration != '':
             vulnerable_software_list = get_vulnerable_software_list(cve['configurations'])
         else:
-            vulnerable_software_list = ''
+            vulnerable_software_list = []
     except:
         vulnerable_software_list = []
     try:
@@ -168,6 +221,7 @@ def get_data(cve):
         vector = cve['impact']['baseMetricV2']['cvssV2']['accessVector']
     except:
         vector = ''
+
     return (cve_id,description,configuration,vulnerable_software_list,impact,vector, published_date,modified_date,references,cve_json)
 
 
@@ -203,6 +257,20 @@ def setup_database(db,usr,password):
         primary key (cve_id)
     );
     """
+    update_history_schema = """--
+    -- this is the collection of download records for different files that NIST supplies.
+    create table if not exists update_history (
+    update_id int not NULL auto_increment,
+    download_name text,
+    lastModifiedDate varchar(80),
+    downloadedDate varchar(80),
+    size int,
+    zipSize int,
+    gzSize int,
+    sha256 text,
+    primary key(update_id)
+    );
+    """
     # add columns here, implement them in the insert_data_into_db and 
     # get_data(cve)
     # dive into the data and have fun!
@@ -212,20 +280,30 @@ def setup_database(db,usr,password):
         passwd = password,
         charset="utf8mb4",
         collation="utf8mb4_unicode_ci",
-        use_unicode=True,
-        database=db
+        use_unicode=True
         )
     curs = conn.cursor()
     curs.execute(db_schema)
     conn.commit()
+    conn.close()
+    conn = mysql.connector.connect(
+        host = "127.0.0.1",
+        user = usr,
+        passwd = password,
+        charset="utf8mb4",
+        collation="utf8mb4_unicode_ci",
+        use_unicode=True,
+        database = db
+        )
+    curs = conn.cursor()
     curs.execute(cve_schema)
+    curs.execute(update_history_schema)
+    # curs.execute('create index dates on nvd(published_datetime);')
     conn.commit()
-    #curs.execute('create index dates on nvd(published_datetime);')
-    #conn.commit()
     conn.close()
 
 
-def insert_data_into_db(db,usr,password,data):
+def insert_data_into_db(db,usr,password,data,source_url):
     """ 
     insert the json data into the database
 
@@ -254,8 +332,17 @@ def insert_data_into_db(db,usr,password,data):
             collation="utf8mb4_unicode_ci",
             use_unicode=True,
             database = db
-        )    
+        )
     curs = conn.cursor()
+    download_date = datetime.datetime.now().isoformat()
+    lastModifiedDate,sha256 = get_file_lastModifiedDate(source_url)
+    sql = "insert into update_history(download_name,downloadedDate,lastModifiedDate,sha256) values (%s,%s,%s,%s);"
+    try:
+        curs.execute(sql,(source_url,download_date,lastModifiedDate,sha256))
+    except Exception as oops:
+        print(oops)
+        print('insert_date_into_db: sql: %s' % sql)
+        print("%s %s %s %s" % (source_url,download_date,lastModifiedDate,sha256))
     cvecount = 0
     sql = r'replace into nvd(cve_id, summary, config, vulnerable_software_list, score, access_vector, published_datetime, last_modified_datetime, urls, cve_item) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s);'
     for cve in data['CVE_Items']:
@@ -285,14 +372,16 @@ def get_and_load(modifiers,filenametemplate,thisyear,db,user,password,baseurl):
         modifier = str(modifier)
         filename = re.sub('year', modifier, filenametemplate)
         url = re.sub('year', modifier, baseurl)
-        get_from_nist(url,filename+'.zip')
-        unzip(filename+'.zip')
-        print("loading %s file from NIST into %s database" % (filename, db))
-        syslog.syslog(syslog.LOG_NOTICE,"nvd2mysqlloader.py: loading %s file from NIST into %s database" % (filename, db))
-        data = json.loads((open(filename,encoding="utf8").read()))
-        cvecount += insert_data_into_db(db,user,password,data)
-        os.remove(filename)
-        os.remove(filename +'.zip')
+        if download_if_lastdownloaded_lt_lastModifiedDate(user, password, db, url):
+            get_from_nist(url,filename+'.zip')
+            unzip(filename+'.zip')
+            data = json.loads((open(filename,encoding="utf8").read()))
+            cvecount += insert_data_into_db(db,user,password,data,url)
+            print("loaded %s file from NIST into %s database" % (filename, db))
+            syslog.syslog(syslog.LOG_NOTICE,"nvd2mysqlloader.py: loaded %s file from NIST into %s database" % (filename, db))
+            os.remove(filename)
+            os.remove(filename +'.zip')
+
     return cvecount
 
 
@@ -327,8 +416,12 @@ def main():
     syslog.openlog(logoption=syslog.LOG_PID)
     syslog.syslog(syslog.LOG_NOTICE,'nvd2mysqlloader.py: started')
     loadcount = get_and_load(modifiers,filenametemplate,thisyear,db,user,password,baseurl)
-    syslog.syslog(syslog.LOG_NOTICE,"nvd2mysqlloader.py: There were %s CVEs loaded or updated." % loadcount)
-    print("nvd2mysqlloader.py: There were %s CVEs loaded or updated." % loadcount)
+    if loadcount == 0:
+        syslog.syslog(syslog.LOG_NOTICE,"nvd2mysqlloader.py: There were no new CVEs added since last update.")
+        print("nvd2mysqlloader.py: There were no new CVEs added since last update.")
+    else:    
+        syslog.syslog(syslog.LOG_NOTICE,"nvd2mysqlloader.py: There were %s CVEs loaded or updated." % loadcount)
+        print("nvd2mysqlloader.py: There were %s CVEs loaded or updated." % loadcount)
 
 
 if __name__ == '__main__':
