@@ -12,6 +12,7 @@
         o v0.5 - created database loader, sent project on to github
         o v0.6 - store history of loading in the database, use that history so that all data is not reloaded unless we suspect that we are out of date. Fixed database initialization so it will work if we have a valid config.json 
         listed in the source.
+        o v0.6.1 - added index so database is compatable with falco_mysql 3rd party code security app
 
     Copyright 2019 Mark Menkhus
 
@@ -42,7 +43,7 @@ import syslog
 
 
 __author__ = 'Mark Menkhus, mark.menkhus@gmail.com'
-__version__ = '0.6'
+__version__ = '0.6.1'
 __DEBUG__ = False
 
 
@@ -299,6 +300,7 @@ def setup_database(db,usr,password):
     curs.execute(cve_schema)
     curs.execute(update_history_schema)
     # curs.execute('create index dates on nvd(published_datetime);')
+    # curs.execute('alter table nvd add fulltext(vulnerable_software_list);')
     conn.commit()
     conn.close()
 
@@ -310,9 +312,6 @@ def insert_data_into_db(db,usr,password,data,source_url):
     We are still learning the JSON material so right now, this data saves most of the CVE data TWICE into the database.  We save 
     into cve_item which is doubling the data. cve_item is the original CVE, and we use that to learn more about the format of the
     data.
-
-    ALTER USER 'mark'@'localhost' IDENTIFIED WITH mysql_native_password BY 'mypasswd';
-
     """
     try:
         conn = mysql.connector.connect(
