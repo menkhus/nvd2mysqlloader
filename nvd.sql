@@ -51,6 +51,7 @@ CREATE TABLE if not exists nvd (
 --
 --
 create index dates on nvd(published_datetime);
+alter table nvd add fulltext(vulnerable_software_list);
 --
 --
 create table if not exists update_history (
