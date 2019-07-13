@@ -43,7 +43,7 @@ import syslog
 
 
 __author__ = 'Mark Menkhus, mark.menkhus@gmail.com'
-__version__ = '0.6.1'
+__version__ = '0.6.2'
 __DEBUG__ = False
 
 
@@ -194,7 +194,9 @@ def get_data(cve):
     cve_id = cve["cve"]["CVE_data_meta"]["ID"]
     published_date = cve['publishedDate']
     modified_date = cve['lastModifiedDate']
-    description = cve['cve']['description']['description_data'][0]['value']
+    description = ''
+    for blob in cve['cve']['description']['description_data']:
+        description += blob['value']
     try:
         configuration = json.dumps(cve['configurations'])
     except:
@@ -234,13 +236,10 @@ def setup_database(db,usr,password):
                     DEFAULT COLLATE='utf8mb4_unicode_ci';
                 """
 
-    cve_schema = """-- nvd_json is a database in progress to pull CVE data from the NIST JSON tables
+    nvd_schema = """-- nvd is a database in progress to pull CVE data from the NIST JSON tables
     --
-    -- when we are reasonably done, we will take the json cve_item out of the table, but it's
-    -- there if we need it. 
-    --          Mark Menkhus, 2019 mdm@hpe.com
-    --
-    CREATE TABLE if not exists nvd (cve_id varchar(16),
+    CREATE TABLE if not exists nvd (
+        cve_id varchar(16),
         summary mediumtext,
         config mediumtext,
         score real(3,1),
@@ -254,7 +253,14 @@ def setup_database(db,usr,password):
         published_datetime varchar(64),
         urls mediumtext,
         vulnerable_software_list mediumtext,
-        cve_item mediumtext,
+        primary key (cve_id)
+    );
+    """
+    nvd_json_schema = """
+    -- nvd_json is the whole of the JSON from NVD stored by CVE ID
+    CREATE TABLE if not exists nvd_json (
+        cve_id varchar(16),
+        cve_item json,
         primary key (cve_id)
     );
     """
@@ -297,7 +303,8 @@ def setup_database(db,usr,password):
         database = db
         )
     curs = conn.cursor()
-    curs.execute(cve_schema)
+    curs.execute(nvd_schema)
+    curs.execute(nvd_json_schema)
     curs.execute(update_history_schema)
     # curs.execute('create index dates on nvd(published_datetime);')
     # curs.execute('alter table nvd add fulltext(vulnerable_software_list);')
@@ -307,11 +314,11 @@ def setup_database(db,usr,password):
 
 def insert_data_into_db(db,usr,password,data,source_url):
     """ 
-    insert the json data into the database
+    insert the data into the database, we pulled it as json, and we do store all the json data 
+    in nvd_json table.
 
-    We are still learning the JSON material so right now, this data saves most of the CVE data TWICE into the database.  We save 
-    into cve_item which is doubling the data. cve_item is the original CVE, and we use that to learn more about the format of the
-    data.
+    We are still learning the JSON material so right now, this data saves most of the CVE data TWICE into the database.  We save the json data into cve_item which is doubling the data. Note, cve_item is pretty much the original CVE JSON, 
+    and we use that to learn more about the format of the data.
     """
     try:
         conn = mysql.connector.connect(
@@ -343,14 +350,20 @@ def insert_data_into_db(db,usr,password,data,source_url):
         print('insert_date_into_db: sql: %s' % sql)
         print("%s %s %s %s" % (source_url,download_date,lastModifiedDate,sha256))
     cvecount = 0
-    sql = r'replace into nvd(cve_id, summary, config, vulnerable_software_list, score, access_vector, published_datetime, last_modified_datetime, urls, cve_item) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s);'
+    sql = r'replace into nvd(cve_id, summary, config, vulnerable_software_list, score, access_vector, published_datetime, last_modified_datetime, urls) values(%s,%s,%s,%s,%s,%s,%s,%s,%s);'
+    sql_for_json = r'replace into nvd_json(cve_id, cve_item) values(%s,%s);'
     for cve in data['CVE_Items']:
         cvecount += 1
         cve_id,description,configuration,vulnerable_software_list,impact,vector,published_date,modified_date,references,cve_json = get_data(cve)
         try:
-            curs.execute(sql,(cve_id,description,configuration,vulnerable_software_list, impact,vector, published_date,modified_date,references,cve_json))
+            curs.execute(sql,(cve_id,description,configuration,vulnerable_software_list, impact,vector, published_date,modified_date,references))
         except Exception as oops:
-            print('data error: %s\ndata: %s\ncve_id: %s\n,description: %s\n,configuration: %s\n,vulnerable_software_list: %s\n,impact: %s\n,published_date: %s\n,modified_date: %s\n,references: %s\ncve_json: %s\n' % (oops,cve,cve_id,description,configuration,vulnerable_software_list,impact,published_date,modified_date,references,cve_json))
+            print('data error: %s\ndata: %s\ncve_id: %s\n,description: %s\n,configuration: %s\n,vulnerable_software_list: %s\n,impact: %s\n,published_date: %s\n,modified_date: %s\n,references: %s\ncve_json: %s\n' % (oops,cve,cve_id,description,configuration,vulnerable_software_list,impact,published_date,modified_date,references))
+            exit()
+        try:
+            curs.execute(sql_for_json, (cve_id, cve_json))
+        except Exception as oops:
+            print('data error: %s\ncve_id: %s\njson data: %s' % (oops, cve_id, cve_json))
             exit()
     conn.commit()
     conn.close()

@@ -7,5 +7,7 @@ NIST_json_schemas
 NIST_json_schemas/*
 branchnotes.md
 tmp
+*.ipynb
+*.json
 
 
