@@ -45,7 +45,13 @@ CREATE TABLE if not exists nvd (
     published_datetime varchar(64),
     urls mediumtext,
     vulnerable_software_list mediumtext,
-    cve_item mediumtext,
+    primary key (cve_id)
+);
+--
+--
+CREATE TABLE if not exists nvd_json (
+    cve_id varchar(16),
+    cve_item json,
     primary key (cve_id)
 );
 --
