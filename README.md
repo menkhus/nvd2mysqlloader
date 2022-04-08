@@ -13,7 +13,7 @@ Author: [Mark Menkhus](mailto:mark.menkhus@gmail.com)
 
 * Currently loads version 1.0 of NIST NVD CVE informations.
 
-&copy;2019, Mark Menkhus
+&copy;2019-2022, Mark Menkhus
 License: [Apache 2.0](http://www.apache.org/licenses/LICENSE-2.0)
 
    Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,3 +27,16 @@ License: [Apache 2.0](http://www.apache.org/licenses/LICENSE-2.0)
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+## How to use 
+
+* This code works with Mysql server 5.7
+
+* create a database on mysql server called nvd
+
+* create a user and role that will be able to create the tables in nvd, and insert data
+
+* create users who can read the nvd table
+
+### This code is used on mysql 5.7 and with minor modification on version 8.0
+

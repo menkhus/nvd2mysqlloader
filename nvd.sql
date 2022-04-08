@@ -6,10 +6,10 @@
 -- Created to be loaded by the nvd2mysqlloader.py . Database can be used by whatever program 
 -- wants this data
 --
--- Author Mark Menkhus, 2019
+-- Author Mark Menkhus
 --
 -- 
---  Copyright 2019 Mark Menkhus
+--  Copyright 2019-2022 Mark Menkhus
 --
 --  Licensed under the Apache License, Version 2.0 (the "License");
 --  you may not use this file except in compliance with the License.
@@ -29,9 +29,17 @@ CREATE DATABASE IF NOT EXISTS nvd
     DEFAULT COLLATE='utf8mb4_unicode_ci';
 --
 --
+USE NVD;
+--
+-- Bug: the CVSS score is from persepctive of vserion 3.0, current use is 
+-- CVSS 3.1 Also, the scope field is missing
+-- rename the table fields accordingly, add scope
+-- ref: https://www.first.org/cvss/v3-1/cvss-v31-specification_r1.pdf
+--  MM March, 16 2022
 CREATE TABLE if not exists nvd (
     -- our sql representation of the NIST NVD data
-    cve_id varchar(16),
+    id int not NULL auto_increment,
+    cve_id varchar(20),
     summary mediumtext,
     config mediumtext,
     score real(3,1),
@@ -45,24 +53,27 @@ CREATE TABLE if not exists nvd (
     published_datetime varchar(64),
     urls mediumtext,
     vulnerable_software_list mediumtext,
-    primary key (cve_id)
+    primary key (id)
 );
---
---
+-- 
+--  
 CREATE TABLE if not exists nvd_json (
-    cve_id varchar(16),
+    id int not NULL auto_increment,
+    cve_id varchar(20),
     cve_item json,
-    primary key (cve_id)
+    primary key (id)
 );
 --
 --
-create index dates on nvd(published_datetime);
+create index ix_dates on nvd(published_datetime);
 alter table nvd add fulltext(vulnerable_software_list);
+create index ix_cve on nvd(cve_id);
+create index ix_cve_json on nvd_json(cve_id);
 --
 --
 create table if not exists update_history (
     -- this is the collection of download records for different files that NIST supplies.
-    update_id int not NULL auto_increment,
+    id int not NULL auto_increment,
     download_name text,
     lastModifiedDate varchar(80),
     downloadedDate varchar(80),
@@ -70,5 +81,51 @@ create table if not exists update_history (
     zipSize int,
     gzSize int,
     sha256 text,
-    primary key(update_id)
+    primary key(id)
+); 
+--
+--
+create table if not exists guess_history (
+    -- this is the collection of cvss guessing records for CVEs that we tried to guess.  
+    id int not NULL auto_increment,
+    cve_id varchar(20),
+    guessDate varchar(80),
+    primary key(id)
+); 
+-- 
+-- CVE to CPE map
+CREATE TABLE IF NOT EXISTS cve2cpe(
+    id int not NULL auto_increment,
+    primary key(id),
+    cve_id int,
+    cpe_id int
+);
+-- 
+-- Unique CPE id
+CREATE TABLE IF NOT EXISTS CPE(
+    id int not NULL auto_increment,
+    primary key(id),
+    cpe text
+    -- CONSTRAINT constraint_name UNIQUE (cpe)
+);
+-- 
+-- Unique CPE vendor
+CREATE TABLE IF NOT EXISTS cpe_vendor(
+    id int not NULL auto_increment,
+    primary key(id),
+    vendor text
+);
+-- 
+-- Unique CPE product name
+CREATE TABLE IF NOT EXISTS cpe_prod(
+    id int not NULL auto_increment,
+    primary key(id),
+    product text
+);
+--
+-- Unique cpe version string
+CREATE TABLE IF NOT EXISTS cpe_version(
+    id int not NULL auto_increment,
+    primary key(id),
+    version text
 );

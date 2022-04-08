@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 
 """ import json files from NIST NVD into a database
- 
-    Mark Menkhus 2019 mark.menkhus@hpe.com
-
-    to do:
-        o understand that NIST data and pull all the NIST provied data, cpe data is incomplete, just
-        the configuraiton is loaded so far
-    
+     
     history:
         o v0.5 - created database loader, sent project on to github
         o v0.6 - store history of loading in the database, use that history so that all data is not reloaded unless we suspect that we are out of date. Fixed database initialization so it will work if we have a valid config.json 
         listed in the source.
-        o v0.6.1 - added index so database is compatable with falco_mysql 3rd party code security app
+        o v0.6.1 - added index so database is compatable with falco 3rd party code security app
+        o v0.6.2 - began to change database modeling for CPE to be able to use cpe's instead of vulnerable_software_list
+        o v0.6.3 - updated to support NIST NVD v1.1 JSON data
 
-    Copyright 2019 Mark Menkhus
+    (c)Mark Menkhus 2019-2022 mark.menkhus@gmail.com
 
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -43,19 +39,29 @@ import syslog
 
 
 __author__ = 'Mark Menkhus, mark.menkhus@gmail.com'
-__version__ = '0.6.2'
+__version__ = '0.6.3'
 __DEBUG__ = False
 
 
 def get_file_lastModifiedDate(file_url):
-    """ get the modified date for a file on the nist site using the .meta file
+    """ get the modified date and meta data for a file on the nist site using the .meta file
+
+        example:
+        lastModifiedDate:2019-10-12T20:07:56-04:00
+        size:32169411
+        zipSize:1840270
+        gzSize:1840126
+        sha256:64310FE691D08F3BCACAA566249195447543A0AA5F3E61CB5FB6F29DC2C9A06F
     """
     url = file_url.replace('json.zip','meta')
     metadata = requests.get(url).text
     metadata = metadata.split('\n')
     lastModifiedDate = metadata[0].lstrip('lastModifiedDate:').rstrip('\r')
+    size = metadata[1].lstrip('size:').rstrip('\r')
+    zipSize = metadata[2].lstrip('zipSize:').rstrip('\r')
+    gzSize = metadata[3].lstrip('gzSize:').rstrip('\r')
     sha256 = metadata[4].lstrip('sha256:').rstrip('\r')
-    return (lastModifiedDate,sha256)
+    return (lastModifiedDate,size,zipSize, gzSize,sha256)
 
 
 def download_if_lastdownloaded_lt_lastModifiedDate(usr, password, db, url):
@@ -126,14 +132,23 @@ def initial_setup(get_all_data=False):
 
         There are constants like where is the NVD site, what is the file name format.
     """
-    configfile = '/Users/mark/.nvd_db/config.json'
-    myconfig = json.loads(open(configfile).read())
+    # setup to work with configs on my laptop or my home machine
+    # the config.json has dbname, dba, password, and could have host bt this 
+    # is currently set to localhost
+    try:
+        configfile = '/Users/menkhus/.nvd_db/config.json'
+        myconfig = json.loads(open(configfile).read())
+    except FileNotFoundError:
+        # make this a read only file in your home dir
+        # modify as needed
+        configfile = '/Users/a_user_name/.nvd_db/config.json.template'
+        myconfig = json.loads(open(configfile).read())
     db = myconfig['dbname']
     user = myconfig['dba']
     password = myconfig['password']
     thisyear = datetime.datetime.now()
     thisyear = thisyear.year
-    filenametemplate = './jsonfiles/nvdcve-1.0-year.json'
+    filenametemplate = './jsonfiles/nvdcve-1.1-year.json'
     if not os.path.exists('./jsonfiles'):
         os.makedirs('./jsonfiles')
     if get_all_data:
@@ -143,17 +158,23 @@ def initial_setup(get_all_data=False):
         modifiers.append('recent')
     else:
         modifiers=['modified','recent']
-    # NVD has changed the version in the path, and the version of the schema's used
-    # watch for this to change!!!
-    baseurl = 'https://nvd.nist.gov/feeds/json/cve/1.0/nvdcve-1.0-year.json.zip'
+    # NVD changes the version in the path, and the version of the schema's used
+    # watch for this to change.  Most recent change was fall 2019
+    baseurl = 'https://nvd.nist.gov/feeds/json/cve/1.1/nvdcve-1.1-year.json.zip'
     
     return (modifiers,filenametemplate,thisyear,db, user, password, baseurl)
 
 
 def get_vulnerable_software_list(config):
     """ input: is the python dictionary structure from the nvd's JSON input for the CVE item,
-        is has 'and' 'or' logic.  We are just going to use the 'or' logic to start.  Will create a more or less simplified version of the more complex configuration structure
+        it has 'and' 'or' logic.  We are just going to use the 'or' logic to start.  Will create a more or less simplified version of the more complex configuration structure
         return a list of cpe items.
+
+        Use this to make simple queries about configurations which are impacted.  This is a full text 
+        column, and you ask for a cpe or a part of a cpe to find CPE entries that are impacted 
+        company:product:version
+
+        I did this to make cpe specific searches directly possible
     """
     vulnerable_software_list = []
     for node in config['nodes']:
@@ -163,6 +184,7 @@ def get_vulnerable_software_list(config):
                     if type(cpe) == dict and cpe['vulnerable'] == True:
                         vulnerable_software_list.append(cpe['cpe23Uri'])
             except Exception as oops:
+                # print("vulnerable_software_list: %s on finding cpe in config['nodes']" % (oops,))
                 pass
 
     return ','.join(vulnerable_software_list)
@@ -176,17 +198,17 @@ def get_data(cve):
         the CVSS v2, CVSS v3, scoring, CPE items from impacts.
         Over time we expect the CVE data to be filled in.
 
-        get this stuff too:
+        get CVSS stuff too:
         {
         'version': '2.0',
         'vectorString': 'AV:L/AC:H/Au:N/C:P/I:N/A:N',
-        'accessVector': 'LOCAL',
-        'accessComplexity': 'HIGH',
-        'authentication': 'NONE',
-        'confidentialityImpact': 'PARTIAL',
-        'integrityImpact': 'NONE',
-        'availabilityImpact': 'NONE',
-        'baseScore': 1.2
+        x'accessVector': 'LOCAL',
+        x'accessComplexity': 'HIGH',
+        x'authentication': 'NONE',
+        x'confidentialityImpact': 'PARTIAL',
+        x'integrityImpact': 'NONE',
+        x'availabilityImpact': 'NONE',
+        x'baseScore': 1.2
         }
 
     """
@@ -224,8 +246,27 @@ def get_data(cve):
         vector = cve['impact']['baseMetricV2']['cvssV2']['accessVector']
     except:
         vector = ''
-
-    return (cve_id,description,configuration,vulnerable_software_list,impact,vector, published_date,modified_date,references,cve_json)
+    try:
+        access_complexity = cve['impact']['baseMetricV2']['cvssV2']['accessComplexity']
+    except:
+        access_complexity = ''
+    try:
+        authorize = cve['impact']['baseMetricV2']['cvssV2']['authentication']
+    except:
+        authorize = ''
+    try:
+        confidentiality_impact = cve['impact']['baseMetricV2']['cvssV2']['confidentialityImpact']
+    except:
+        confidentiality_impact = ''
+    try:
+        availability_impact = cve['impact']['baseMetricV2']['cvssV2']['availabilityImpact']
+    except:
+        availability_impact = ''
+    try:
+        integrity_impact = cve['impact']['baseMetricV2']['cvssV2']['integrityImpact']
+    except:
+        integrity_impact = ''
+    return (cve_id,description,configuration,vulnerable_software_list,impact,vector,access_complexity, authorize,confidentiality_impact,integrity_impact,availability_impact, published_date,modified_date,references,cve_json)
 
 
 def setup_database(db,usr,password):
@@ -239,7 +280,9 @@ def setup_database(db,usr,password):
     nvd_schema = """-- nvd is a database in progress to pull CVE data from the NIST JSON tables
     --
     CREATE TABLE if not exists nvd (
-        cve_id varchar(16),
+    -- our sql representation of the NIST NVD data
+        id int not NULL auto_increment,
+        cve_id varchar(20),
         summary mediumtext,
         config mediumtext,
         score real(3,1),
@@ -253,32 +296,74 @@ def setup_database(db,usr,password):
         published_datetime varchar(64),
         urls mediumtext,
         vulnerable_software_list mediumtext,
-        primary key (cve_id)
+        primary key (id)
     );
+    # this table does not have to be filled, but it seemed important
+    # to have the source information to be able to add new features as
+    # time permits
     """
     nvd_json_schema = """
     -- nvd_json is the whole of the JSON from NVD stored by CVE ID
     CREATE TABLE if not exists nvd_json (
-        cve_id varchar(16),
+        id int not NULL auto_increment,
+        cve_id varchar(20),
         cve_item json,
-        primary key (cve_id)
+        primary key (id)
     );
     """
     update_history_schema = """--
-    -- this is the collection of download records for different files that NIST supplies.
     create table if not exists update_history (
-    update_id int not NULL auto_increment,
-    download_name text,
-    lastModifiedDate varchar(80),
-    downloadedDate varchar(80),
-    size int,
-    zipSize int,
-    gzSize int,
-    sha256 text,
-    primary key(update_id)
+        -- this is the collection of download records for different files that NIST supplies.
+        id int not NULL auto_increment,
+        download_name text,
+        lastModifiedDate varchar(80),
+        downloadedDate varchar(80),
+        size int,
+        zipSize int,
+        gzSize int,
+        sha256 text,
+        primary key(id)
     );
     """
-    # add columns here, implement them in the insert_data_into_db and 
+    nvd_cpe = """
+    create table if not exists nvd_cpe (
+        id int not null auto_increment,
+        nvd_id int not null references nvd,
+        cpe_id  int not null references cpe,
+        primary key(id)
+    );
+    """
+    cpe = """CREATE TABLE IF NOT EXISTS cpe(
+        -- cpe:2.3:o:bsdi:bsd_os:3.1:*:*:*:*:*:*:*
+        id int not NULL auto_increment,
+        cpe_version_id int,
+        cpe_type_id int,
+        software_version_id int not null references software_version,
+        primary key (id)
+    );
+    """
+    software_version = """CREATE TABLE IF NOT EXISTS software_version(
+        id int not NULL auto_increment,
+        vers text,
+        subvers text,
+        software_product_id int not null references software_product,
+        primary key (id)
+    );
+    """
+    software_product = """CREATE TABLE IF NOT EXISTS software_product(
+        id int not NULL auto_increment,
+        product text,
+        software_vendor_id int not null references software_vendor,
+        primary key (id)    
+    );
+    """
+    software_vendor = """CREATE TABLE IF NOT EXISTS software_vendor(
+        id int not NULL auto_increment,
+        vendor text,
+        primary key (id)    
+    );
+    """
+    # add tables here, implement them in the insert_data_into_db and 
     # get_data(cve)
     # dive into the data and have fun!
     conn = mysql.connector.connect(
@@ -306,8 +391,19 @@ def setup_database(db,usr,password):
     curs.execute(nvd_schema)
     curs.execute(nvd_json_schema)
     curs.execute(update_history_schema)
-    # curs.execute('create index dates on nvd(published_datetime);')
-    # curs.execute('alter table nvd add fulltext(vulnerable_software_list);')
+    curs.execute(nvd_cpe)
+    curs.execute(cpe)
+    curs.execute(software_version)
+    curs.execute(software_product)
+    curs.execute(software_vendor)
+    try:
+        curs.execute('create index dates on nvd(published_datetime);')
+        curs.execute('alter table nvd add fulltext(vulnerable_software_list);')
+        curs.execute('create index ix_cve on nvd(cve_id);')
+        curs.execute('create index ix_cve_json on nvd_json(cve_id);')
+        curs.execute('ALTER TABLE nvd CONVERT TO CHARACTER SET utf8;')
+    except:
+        pass
     conn.commit()
     conn.close()
 
@@ -339,29 +435,51 @@ def insert_data_into_db(db,usr,password,data,source_url):
             use_unicode=True,
             database = db
         )
-    curs = conn.cursor()
+    curs = conn.cursor(buffered=True)
     download_date = datetime.datetime.now().isoformat()
-    lastModifiedDate,sha256 = get_file_lastModifiedDate(source_url)
-    sql = "insert into update_history(download_name,downloadedDate,lastModifiedDate,sha256) values (%s,%s,%s,%s);"
+    lastModifiedDate,size,zipSize,gzSize,sha256 = get_file_lastModifiedDate(source_url)
+    sql = "insert into update_history(download_name,downloadedDate,lastModifiedDate,size,zipSize,gzSize,sha256) values (%s,%s,%s,%s,%s,%s,%s);"
     try:
-        curs.execute(sql,(source_url,download_date,lastModifiedDate,sha256))
+        curs.execute(sql,(source_url,download_date,lastModifiedDate,size,zipSize, gzSize,sha256))
     except Exception as oops:
         print(oops)
         print('insert_date_into_db: sql: %s' % sql)
-        print("%s %s %s %s" % (source_url,download_date,lastModifiedDate,sha256))
+        print("%s %s %s %s %d=s %s %s" % (source_url,download_date,lastModifiedDate,size,zipSize, gzSize,sha256))
     cvecount = 0
-    sql = r'replace into nvd(cve_id, summary, config, vulnerable_software_list, score, access_vector, published_datetime, last_modified_datetime, urls) values(%s,%s,%s,%s,%s,%s,%s,%s,%s);'
+    replace_sql = r'replace into nvd(id, cve_id, summary, config, vulnerable_software_list, score, access_vector, access_complexity, authorize, confidentiality_impact,integrity_impact,availability_impact, published_datetime, last_modified_datetime, urls) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s);'
+    insert_sql = r'insert into nvd(cve_id, summary, config, vulnerable_software_list, score, access_vector, access_complexity, authorize, confidentiality_impact,integrity_impact,availability_impact, published_datetime, last_modified_datetime, urls) values(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s);'
     sql_for_json = r'replace into nvd_json(cve_id, cve_item) values(%s,%s);'
     for cve in data['CVE_Items']:
         cvecount += 1
-        cve_id,description,configuration,vulnerable_software_list,impact,vector,published_date,modified_date,references,cve_json = get_data(cve)
+        cve_id,description,configuration,vulnerable_software_list,impact,vector,access_complexity,authorize,confidentiality_impact,integrity_impact,availability_impact,published_date,modified_date,references,cve_json = get_data(cve)
         try:
-            curs.execute(sql,(cve_id,description,configuration,vulnerable_software_list, impact,vector, published_date,modified_date,references))
+            curs.execute('select id from nvd where cve_id = %s limit 1;',(cve_id,))
+            cur_id = curs.fetchone()
+            if cur_id == None:
+                curs.execute(insert_sql,(cve_id, description,configuration,vulnerable_software_list,impact,vector,access_complexity,authorize,confidentiality_impact,integrity_impact,availability_impact,published_date,modified_date,references))
+                conn.commit()
+            # print("current id: %s cve_id: %s" % (cur_id,cve_id))
+            else:
+                curs.execute(replace_sql,(cur_id[0], cve_id, description,configuration,vulnerable_software_list,impact,vector,access_complexity,authorize,confidentiality_impact,integrity_impact,availability_impact,published_date,modified_date,references))
+                conn.commit()
         except Exception as oops:
-            print('data error: %s\ndata: %s\ncve_id: %s\n,description: %s\n,configuration: %s\n,vulnerable_software_list: %s\n,impact: %s\n,published_date: %s\n,modified_date: %s\n,references: %s\ncve_json: %s\n' % (oops,cve,cve_id,description,configuration,vulnerable_software_list,impact,published_date,modified_date,references))
+            print('insert_data_into_db: %s, while getting id.' % (oops,))
+            print('if you get an error reting to insert unicode, try this: ALTER TABLE nvd.nvd CONVERT TO CHARACTER SET utf8;')
             exit()
+
+        """     except Exception as oops:
+            print('data error: %s\ndata: %s\ncve_id: %s\n,description: %s\n,configuration: %s\n,vulnerable_software_list: %s\n,impact: %s\naccess_complexity: %s\n,authorize: %s\n,confidentiality_impact: %s\n,integrity_impact: %s\n,availability_impact: %s\n,published_date: %s\n,modified_date: %s\n,references: %s\n' % (oops,cve,cve_id,description,configuration,vulnerable_software_list,impact,access_complexity,authorize,confidentiality_impact,integrity_impact,availability_impact,published_date,modified_date,references))
+            exit()
+        """
         try:
-            curs.execute(sql_for_json, (cve_id, cve_json))
+            curs.execute('select id from nvd_json where cve_id = %s limit 1;',(cve_id,))
+            cur_id = curs.fetchone()
+            if cur_id == None:
+                curs.execute(r'insert into nvd_json(cve_id, cve_item) values(%s,%s);', (cve_id,cve_json))
+                conn.commit()
+            else:
+                curs.execute(r'replace into nvd_json(id, cve_id, cve_item) values(%s, %s,%s);', (cur_id[0], cve_id,cve_json))
+                conn.commit()
         except Exception as oops:
             print('data error: %s\ncve_id: %s\njson data: %s' % (oops, cve_id, cve_json))
             exit()
@@ -370,6 +488,22 @@ def insert_data_into_db(db,usr,password,data,source_url):
     
     return cvecount
 
+
+def cve_tally(db,user,password):
+    """ what are the total number of CVEs in the database?"""
+    sql = "select count(distinct(cve_id)) from nvd;"
+    conn = mysql.connector.connect(
+            host = "127.0.0.1",
+            user = user,
+            passwd = password,charset="utf8mb4",
+            collation="utf8mb4_unicode_ci",
+            use_unicode=True,
+            database = db
+        )
+    curs = conn.cursor(buffered=True)
+    curs.execute(sql,)
+    count = curs.fetchone()[0]
+    return count    
 
 def get_and_load(modifiers,filenametemplate,thisyear,db,user,password,baseurl):
     """  using a base url and filename, request data from the nist website,
@@ -427,13 +561,16 @@ def main():
     setup_database(db,user,password)
     syslog.openlog(logoption=syslog.LOG_PID)
     syslog.syslog(syslog.LOG_NOTICE,'nvd2mysqlloader.py: started')
+    cve_tally_before = cve_tally(db,user,password)
     loadcount = get_and_load(modifiers,filenametemplate,thisyear,db,user,password,baseurl)
+    cve_tally_after = cve_tally(db,user,password)
+    added_cves = cve_tally_after - cve_tally_before
     if loadcount == 0:
         syslog.syslog(syslog.LOG_NOTICE,"nvd2mysqlloader.py: There were no new CVEs added since last update.")
         print("nvd2mysqlloader.py: There were no new CVEs added since last update.")
     else:    
         syslog.syslog(syslog.LOG_NOTICE,"nvd2mysqlloader.py: There were %s CVEs loaded or updated." % loadcount)
-        print("nvd2mysqlloader.py: There were %s CVEs loaded or updated." % loadcount)
+        print("nvd2mysqlloader.py: There were %s CVEs loaded or updated with %s CVEs added." % (loadcount,added_cves))
 
 
 if __name__ == '__main__':
